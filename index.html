@@ -132,7 +132,8 @@
     <div><div class="font-bold text-slate-700 mb-1">기간 시작</div><input type="date" id="dateFrom" class="border border-slate-200 rounded p-1 text-[11px]"></div>
     <div><div class="font-bold text-slate-700 mb-1">기간 종료</div><input type="date" id="dateTo" class="border border-slate-200 rounded p-1 text-[11px]"></div>
     <button id="btnDateReset" class="border border-slate-200 rounded px-2 py-1 text-[11px] hover:bg-slate-50">기간 초기화</button>
-    <button id="btnClear" class="ml-auto border border-rose-200 text-rose-600 rounded px-2 py-1 text-[11px] hover:bg-rose-50">저장된 누적 데이터 삭제</button>
+    <button id="btnExport" class="ml-auto border border-torriden-blue text-torriden-blue rounded px-2 py-1 text-[11px] hover:bg-sky-50">공유용 data.json 내보내기</button>
+    <button id="btnClear" class="border border-rose-200 text-rose-600 rounded px-2 py-1 text-[11px] hover:bg-rose-50">저장된 누적 데이터 삭제</button>
   </div>
 
   <details id="uploadHistory" class="bg-white border border-torriden-border rounded-2xl p-3 text-[11px]">
@@ -470,6 +471,37 @@
       } catch (e) { return false; }
     }
     let uploadMeta = {};
+    let sharedAt = '';
+
+    // ---------- 공유 데이터: data.json 내보내기 / 불러오기 ----------
+    const IS_VIEWER = location.protocol.indexOf('http') === 0 && !new URLSearchParams(location.search).has('admin');
+    function buildExport() {
+      return { version: 1, exportedAt: new Date().toISOString(), rows: rawData, uploadMeta, masters: { accountMaster, targetMaster, prodMaster } };
+    }
+    async function loadShared() {
+      try {
+        const res = await fetch('data.json', { cache: 'no-cache' });
+        if (!res.ok) return null;
+        const j = await res.json();
+        return (j && Array.isArray(j.rows) && j.exportedAt) ? j : null;
+      } catch (e) { return null; }   // file:// 로 열었거나 data.json 이 없으면 로컬 데이터 사용
+    }
+    // data.json 의 갱신 시각이 이 브라우저가 마지막으로 반영한 것과 다르면 공유 데이터로 교체
+    async function syncShared() {
+      const shared = await loadShared();
+      if (!shared) return null;
+      sharedAt = shared.exportedAt;
+      if (shared.exportedAt === (await idbGet('sharedStamp'))) return { replaced: false };
+      rawData = shared.rows; uploadMeta = shared.uploadMeta || {};
+      if (shared.masters) { applyMasters(shared.masters); await idbSet('masters', shared.masters); }
+      await idbSet('sharedStamp', shared.exportedAt);
+      await saveData();
+      return { replaced: true, rows: rawData.length };
+    }
+    function applyViewerMode() {
+      if (!IS_VIEWER) return;
+      ['dropZone', 'uploadLog', 'uploadHistory', 'btnClear', 'btnExport'].forEach(id => $(id).classList.add('hidden'));
+    }
     const srcKey = r => r.src || (r.date ? 'unknown' : 'seed');
     async function saveData() {
       const alive = new Set(rawData.map(r => r.src).filter(Boolean));
@@ -677,7 +709,7 @@
       const accs = new Set(rawData.map(d => d.accName));
       const dates = rawData.map(d => d.date).filter(Boolean).sort();
       $('fileInfoText').textContent = rawData.length
-        ? `${accs.size}개 거래처 · ${rawData.length.toLocaleString()}건` + (dates.length ? ` · ${dates[0]} ~ ${dates[dates.length - 1]}` : '')
+        ? `${accs.size}개 거래처 · ${rawData.length.toLocaleString()}건` + (dates.length ? ` · ${dates[0]} ~ ${dates[dates.length - 1]}` : '') + (sharedAt ? ` · 공유 데이터 ${new Date(sharedAt).toLocaleDateString('ko-KR')} 기준` : '')
         : '저장된 데이터 없음 - 엑셀을 업로드하세요';
     }
 
@@ -930,6 +962,16 @@
     $('searchItem').oninput = updateDashboard;
     $('dateFrom').onchange = $('dateTo').onchange = updateDashboard;
     $('btnDateReset').onclick = () => { $('dateFrom').value = ''; $('dateTo').value = ''; updateDashboard(); };
+    $('btnExport').onclick = async () => {
+      const payload = buildExport();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(payload)], { type: 'application/json' }));
+      a.download = 'data.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      await idbSet('sharedStamp', payload.exportedAt);   // 내 브라우저 데이터가 이 내보내기와 같은 기준이 되도록 기록
+      showLog([`✔ data.json 내보내기 완료 (${payload.rows.length.toLocaleString()}건, ${(JSON.stringify(payload).length / 1048576).toFixed(1)}MB). 저장소의 data.json 을 이 파일로 교체해 커밋하세요.`]);
+    };
     $('catSummaryBody').addEventListener('click', summaryClick);
     $('accSummaryBody').addEventListener('click', summaryClick);
     $('activeFilters').addEventListener('click', e => {
@@ -973,6 +1015,9 @@
         rawData = SEED_DATA.map(r => ({ ...r, date: r.date || '' })); // 초기 데이터는 일자 정보 없음(월 단위)
         if (!(await saveData())) showLog(['⚠ 브라우저 저장소를 사용할 수 없어 새로고침하면 업로드한 데이터가 사라집니다.']);
       }
+      const sync = await syncShared();
+      if (sync && sync.replaced && !IS_VIEWER) showLog([`✔ 저장소의 공유 데이터(data.json)로 갱신했습니다 (${sync.rows.toLocaleString()}건)`]);
+      applyViewerMode();
       refreshAll();
     })();
   </script>
