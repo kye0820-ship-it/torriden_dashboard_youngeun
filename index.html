@@ -694,15 +694,43 @@
       if (items.includes(prev)) el.value = prev;
     }
 
+    // 영업팀·유통구조·국가·거래처는 한 묶음, 대분류·중분류도 한 묶음.
+    // 데이터에 실제로 존재하는 조합만 선택지에 보여주고, 서로 맞지 않는 선택은 자동 해제한다.
+    const GEO = [['filterTeam', 'team'], ['filterDist', 'dist'], ['filterCountry', 'country'], ['filterChannel', 'accName']];
+    const CAT = [['filterCat1', 'cat1'], ['filterCat2', 'cat2']];
+    const groupOf = id => [GEO, CAT].find(g => g.some(x => x[0] === id));
+    function groupCombos(group) {
+      const m = new Map();
+      rawData.forEach(r => { const k = group.map(g => r[g[1]]).join('|'); if (!m.has(k)) m.set(k, r); });
+      return [...m.values()];
+    }
+    function refreshGroupOptions(group) {
+      const cs = groupCombos(group), cur = {};
+      group.forEach(([id, fld]) => { cur[fld] = $(id).value; });
+      group.forEach(([id, fld]) => {
+        const pool = cs.filter(c => group.every(([, f2]) => f2 === fld || cur[f2] === 'ALL' || c[f2] === cur[f2]));
+        setOptions($(id), [...new Set(pool.map(c => c[fld]))].filter(Boolean).sort(), '모두 선택');
+      });
+    }
+    // 방금 바꾼 필터(changedId)와 맞지 않는 같은 묶음의 선택값을 해제
+    function resolveGroup(group, changedId) {
+      const cs = groupCombos(group), fld = group.find(g => g[0] === changedId)[1], val = $(changedId).value;
+      if (val === 'ALL') return;
+      group.forEach(([id, f]) => {
+        if (id === changedId) return;
+        const w = $(id).value;
+        if (w !== 'ALL' && !cs.some(c => c[fld] === val && c[f] === w)) $(id).value = 'ALL';
+      });
+      const sel = group.map(([id, f]) => [f, $(id).value]).filter(x => x[1] !== 'ALL');
+      if (!cs.some(c => sel.every(([f, v]) => c[f] === v))) group.forEach(([id]) => { if (id !== changedId) $(id).value = 'ALL'; });
+    }
+    const afterSet = id => { const g = groupOf(id); if (g) resolveGroup(g, id); };
+
     function populateFilters() {
       const uniq = k => [...new Set(rawData.map(d => d[k]))].filter(Boolean).sort();
       setOptions($('filterMonth'), uniq('month'), '전체 월');
-      setOptions($('filterTeam'), uniq('team'), '모두 선택');
-      setOptions($('filterDist'), uniq('dist'), '모두 선택');
-      setOptions($('filterCountry'), uniq('country'), '모두 선택');
-      setOptions($('filterChannel'), uniq('accName'), '모두 선택');
-      setOptions($('filterCat1'), uniq('cat1'), '모두 선택');
-      setOptions($('filterCat2'), uniq('cat2'), '모두 선택');
+      refreshGroupOptions(GEO);
+      refreshGroupOptions(CAT);
     }
 
     function updateHeader() {
@@ -778,6 +806,7 @@
       const el = $(id);
       if (![...el.options].some(o => o.value === value)) return;
       el.value = el.value === value ? 'ALL' : value;
+      afterSet(id);
       updateDashboard();
     }
 
@@ -793,6 +822,7 @@
     }
 
     function updateDashboard() {
+      refreshGroupOptions(GEO); refreshGroupOptions(CAT);
       const f = getFilters();
       const filtered = applyFilters(f);
       renderChips(f);
@@ -954,11 +984,12 @@
       if (id === 'filterCat1') { el.value = el.value === val ? 'ALL' : val; $('filterCat2').value = 'ALL'; }
       else if (id === 'filterCat2') { const off = el.value === val; el.value = off ? 'ALL' : val; if (!off) $('filterCat1').value = tr.dataset.cat1; }
       else el.value = el.value === val ? 'ALL' : val;
+      afterSet(id);
       updateDashboard();
     }
 
     // ---------- 초기화 ----------
-    ['filterMonth', 'filterTeam', 'filterDist', 'filterCountry', 'filterChannel', 'filterCat1', 'filterCat2'].forEach(id => { $(id).onchange = updateDashboard; });
+    ['filterMonth', 'filterTeam', 'filterDist', 'filterCountry', 'filterChannel', 'filterCat1', 'filterCat2'].forEach(id => { $(id).onchange = () => { afterSet(id); updateDashboard(); }; });
     $('searchItem').oninput = updateDashboard;
     $('dateFrom').onchange = $('dateTo').onchange = updateDashboard;
     $('btnDateReset').onclick = () => { $('dateFrom').value = ''; $('dateTo').value = ''; updateDashboard(); };
